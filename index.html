@@ -261,11 +261,12 @@ const POLL_INTERVAL_MS = 15 * 60 * 1000;
 const GOOGLE_CLIENT_ID = "580224381168-i67a13m72bvlpq8rtkhnjk15tic4k9e1.apps.googleusercontent.com";
 const APPS_SCRIPT_URL  = "https://script.google.com/macros/s/AKfycbxPzXln-bpRick6y_A-L07OVpMbRoycAoikIROpMtovu5RROnt8wvw6XLVDryp8dgyx/exec";
 const PARTIAL_ZOOM_THRESHOLD = 14;
-const LS_DATA     = "leafmap_data_v3";
-const LS_CHECKSUM = "leafmap_checksum_v3";
-const LS_TIME     = "leafmap_time";
-const LS_AUTH     = "leafmap_auth_v1";
-const LS_COOKIE   = "leafmap_cookie_consent";
+const LS_SUFFIX   = SHEET_GID;   // unique per deployment
+const LS_DATA     = `leafmap_data_v3_${LS_SUFFIX}`;
+const LS_CHECKSUM = `leafmap_checksum_v3_${LS_SUFFIX}`;
+const LS_TIME     = `leafmap_time_${LS_SUFFIX}`;
+const LS_AUTH     = `leafmap_auth_v1_${LS_SUFFIX}`;
+const LS_COOKIE   = `leafmap_cookie_consent_${LS_SUFFIX}`;
 
 // ── Status definitions ────────────────────────────────────────────────────────
 const STATUSES = [
