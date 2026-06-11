@@ -406,7 +406,7 @@ function snapToRoad(clickLatLng, pts, cumLens) {
   const total=cumLens[cumLens.length-1];
   if(total===0) return {prop:0,latlng:pts[0]};
   let bestDist=Infinity, bestProp=0, bestPt=pts[0];
-  const click=turfPt([clickLatLng.lat,clickLatLng.lng]);
+  const click = turf.point([clickLatLng.lng, clickLatLng.lat]);
   for(let i=1;i<pts.length;i++) {
     const a=[pts[i-1][1],pts[i-1][0]]; // [lon,lat] for turf
     const b=[pts[i][1],pts[i][0]];
@@ -433,8 +433,9 @@ function snapToRoad(clickLatLng, pts, cumLens) {
 
 // Extract pts/cumLens for a road's combined geometry (all segments concatenated)
 function getRoadGeomData(road) {
-  const segs=parseWKT(road.road_geometry);
-  if(!segs.length) return null;
+  const rawSegs=parseWKT(road.road_geometry);
+  if(!rawSegs.length) return null;
+  const segs = sortSegmentsTopologically(rawSegs);
   const pts=segs.flat();
   const cumLens=cumulativeLengths(pts);
   // segBreaks: for each segment, its start/end proportion of total length
@@ -1251,30 +1252,85 @@ function placeHandles(geomData) {
   }
 }
 
-function updateDrawPreview(geomData) {
-  drawPreviewLayers.forEach(l=>partialLayerGroup.removeLayer(l));
-  drawPreviewLayers=[];
-  if(drawStartProp===null||drawEndProp===null) return;
-  const t0=Math.min(drawStartProp,drawEndProp);
-  const t1=Math.max(drawStartProp,drawEndProp);
-  // Build pts between t0 and t1
-  const pts=geomData.pts, cl=geomData.cumLens;
-  const p0=interpolateAlongPts(pts,cl,t0);
-  const p1=interpolateAlongPts(pts,cl,t1);
-  let subset=[p0];
-  pts.forEach((p,i)=>{const prop=geomData.total>0?cl[i]/geomData.total:0;if(prop>t0&&prop<t1)subset.push(p);});
-  subset.push(p1);
-  if(subset.length<2) return;
+ function sortSegmentsTopologically(segs) {
+  if (segs.length <= 1) return segs;
+  const SNAP_THRESH = 0.0003; // degrees — ~30m tolerance for endpoint matching
 
-  if(drawBothSides) {
-    const l=L.polyline(subset,{color:PARTIAL_COLOUR,weight:PARTIAL_WEIGHT_BOTH,opacity:0.85,interactive:false,dashArray:"8 4"});
-    l.addTo(partialLayerGroup); drawPreviewLayers.push(l);
-  } else {
-    // drawFlipped negates the offset so preview matches the saved render direction
-    const offsetPts=offsetPolyline(subset, drawFlipped ? -PARTIAL_OFFSET_M : PARTIAL_OFFSET_M);
-    const l=L.polyline(offsetPts,{color:PARTIAL_COLOUR,weight:PARTIAL_WEIGHT_SINGLE,opacity:0.85,interactive:false,dashArray:"8 4"});
-    l.addTo(partialLayerGroup); drawPreviewLayers.push(l);
+  function dist(a, b) {
+    return Math.hypot(a[0]-b[0], a[1]-b[1]);
   }
+  function endsMatch(a, b) {
+    // Does end of a connect to start or end of b?
+    const endA = a[a.length-1];
+    return dist(endA, b[0]) < SNAP_THRESH || dist(endA, b[b.length-1]) < SNAP_THRESH;
+  }
+  function maybeFlip(seg, prevEnd) {
+    // Flip segment if its start is further from prevEnd than its end
+    if (dist(prevEnd, seg[0]) <= dist(prevEnd, seg[seg.length-1])) return seg;
+    return [...seg].reverse();
+  }
+
+  const remaining = segs.map(s => [...s]);
+  const sorted = [remaining.splice(0, 1)[0]];
+
+  while (remaining.length) {
+    const prevEnd = sorted[sorted.length-1][sorted[sorted.length-1].length-1];
+    // Find closest next segment by endpoint proximity
+    let bestIdx = 0, bestDist = Infinity;
+    remaining.forEach((seg, i) => {
+      const d = Math.min(dist(prevEnd, seg[0]), dist(prevEnd, seg[seg.length-1]));
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+    const next = remaining.splice(bestIdx, 1)[0];
+    sorted.push(maybeFlip(next, prevEnd));
+  }
+  return sorted;
+}
+
+function updateDrawPreview(geomData) {
+  drawPreviewLayers.forEach(l => partialLayerGroup.removeLayer(l));
+  drawPreviewLayers = [];
+  if (drawStartProp === null || drawEndProp === null) return;
+  const t0 = Math.min(drawStartProp, drawEndProp);
+  const t1 = Math.max(drawStartProp, drawEndProp);
+
+  // Clip per-segment rather than across the flat pts array
+  geomData.breaks.forEach(brk => {
+    const { startProp, endProp, segIdx } = brk;
+    const segLen = endProp - startProp;
+    if (segLen <= 0) return;
+    const overlapStart = Math.max(t0, startProp);
+    const overlapEnd   = Math.min(t1, endProp);
+    if (overlapEnd <= overlapStart) return;
+
+    const segPts = geomData.segs[segIdx];
+    const segCL  = cumulativeLengths(segPts);
+    const segTotal = segCL[segCL.length - 1];
+
+    // Convert global props to within-segment props
+    const st = (overlapStart - startProp) / segLen;
+    const et = (overlapEnd   - startProp) / segLen;
+
+    const p0 = interpolateAlongPts(segPts, segCL, st);
+    const p1 = interpolateAlongPts(segPts, segCL, et);
+    let subset = [p0];
+    segPts.forEach((p, i) => {
+      const prop = segTotal > 0 ? segCL[i] / segTotal : 0;
+      if (prop > st && prop < et) subset.push(p);
+    });
+    subset.push(p1);
+    if (subset.length < 2) return;
+
+    let layer;
+    if (drawBothSides) {
+      layer = L.polyline(subset, { color: PARTIAL_COLOUR, weight: PARTIAL_WEIGHT_BOTH, opacity: 0.85, interactive: false, dashArray: "8 4" });
+    } else {
+      const offsetPts = offsetPolyline(subset, drawFlipped ? -PARTIAL_OFFSET_M : PARTIAL_OFFSET_M);
+      layer = L.polyline(offsetPts, { color: PARTIAL_COLOUR, weight: PARTIAL_WEIGHT_SINGLE, opacity: 0.85, interactive: false, dashArray: "8 4" });
+    }
+    layer.addTo(partialLayerGroup);
+    drawPreviewLayers.push(layer);
+  });
 }
 
 // Show the control panel (flip / both-sides toggle / save / cancel / clear)
